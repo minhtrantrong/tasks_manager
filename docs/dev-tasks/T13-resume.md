@@ -6,7 +6,7 @@
 | Depends on | T08, T09, T12 |
 | Unblocks | T15 |
 | Size | M |
-| Status | pending |
+| Status | done |
 
 ## Goal
 

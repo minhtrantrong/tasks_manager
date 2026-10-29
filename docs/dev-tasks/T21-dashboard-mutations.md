@@ -6,7 +6,7 @@
 | Depends on | T20, T07 |
 | Unblocks | T22 |
 | Size | L |
-| Status | pending |
+| Status | done |
 
 ## Goal
 

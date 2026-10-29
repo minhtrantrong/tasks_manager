@@ -1,0 +1,191 @@
+/* task-manager dashboard — plain CSS, no framework, no external assets. */
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --ink: #1c2128;
+  --muted: #6b7480;
+  --line: #dfe3e8;
+  --accent: #2f6fed;
+  --p1: #d94a4a;
+  --p2: #e08b2d;
+  --p3: #3f8f5e;
+  --p4: #4c7fb5;
+  --p5: #9aa2ad;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar h1 { font-size: 1rem; margin: 0; }
+.topbar h1 a { color: var(--ink); text-decoration: none; }
+.topbar nav a { color: var(--accent); text-decoration: none; margin-right: 0.75rem; }
+
+main { padding: 1rem; }
+
+.board {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(220px, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+  overflow-x: auto;
+}
+
+.column {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem;
+  min-height: 180px;
+}
+
+.column-title {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 0.5rem 0;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  padding: 0.15rem 0;
+  z-index: 1;
+}
+
+.column-count {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.cards { display: flex; flex-direction: column; gap: 0.5rem; }
+
+.card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--p4);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+}
+
+.card.priority-1 { border-left-color: var(--p1); }
+.card.priority-2 { border-left-color: var(--p2); }
+.card.priority-3 { border-left-color: var(--p3); }
+.card.priority-4 { border-left-color: var(--p4); }
+.card.priority-5 { border-left-color: var(--p5); }
+
+.card.waiting { opacity: 0.62; }
+
+.card-title { margin: 0; font-size: 0.9rem; font-weight: 600; }
+.card-title a { color: inherit; text-decoration: none; }
+.card-meta { color: var(--muted); font-size: 0.76rem; margin-top: 0.2rem; }
+
+.chip {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: #eef1f5;
+  color: var(--muted);
+  margin-right: 0.25rem;
+}
+
+.badge-waiting {
+  display: inline-block;
+  font-size: 0.7rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: #fff2d8;
+  color: #8a5a00;
+}
+
+.lease {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.card-journal {
+  margin-top: 0.35rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+  border-top: 1px dashed var(--line);
+  padding-top: 0.3rem;
+}
+
+.swimlane-heading {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0.5rem 0 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.filters { display: flex; gap: 0.75rem; align-items: center; }
+.filters select, .filters a { font-size: 0.8rem; }
+.filters a { color: var(--accent); text-decoration: none; }
+
+.empty { color: var(--muted); font-size: 0.78rem; padding: 0.25rem; }
+
+form.add-task { margin-top: 0.5rem; font-size: 0.8rem; }
+form.add-task input, form.add-task select, form.add-task textarea {
+  width: 100%;
+  margin: 0.15rem 0;
+  padding: 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font: inherit;
+}
+button {
+  font: inherit;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.toast {
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  background: #fdeaea;
+  border: 1px solid var(--p1);
+  color: #7a1c1c;
+  font-size: 0.85rem;
+}
+
+.detail { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; max-width: 900px; }
+.detail h2 { margin-top: 0; }
+.detail h3 { font-size: 0.9rem; margin-bottom: 0.25rem; }
+.detail dl { display: grid; grid-template-columns: 140px 1fr; gap: 0.25rem 0.75rem; }
+.detail dt { color: var(--muted); }
+.detail dd { margin: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.75rem 0; }
+
+.timeline { list-style: none; padding: 0; margin: 0; }
+.timeline li { border-left: 3px solid var(--line); padding: 0.2rem 0 0.5rem 0.6rem; }
+.timeline .meta { color: var(--muted); font-size: 0.75rem; }
+.timeline pre { white-space: pre-wrap; margin: 0.15rem 0 0; font: inherit; }
+
+.graph { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; }
+.graph ul { list-style: none; padding: 0; }
+.graph li { margin: 0.15rem 0; }
+.graph .node-waiting { color: #8a5a00; }
+.graph .status { color: var(--muted); font-size: 0.78rem; }

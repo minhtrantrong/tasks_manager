@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Graph · task-manager{% endblock %}
+{% block topbar %}<a href="/board">&larr; board</a>{% endblock %}
+{% block content %}
+<section class="graph">
+  {% if project %}
+  <h2>{{ project.slug }} — dependency graph</h2>
+  <p class="card-meta">
+    <span class="chip">{{ nodes | length }} nodes</span>
+    <span class="chip">{{ edges | length }} edges</span>
+    <span class="chip">{{ waiting | length }} waiting</span>
+  </p>
+
+  <h3>Nodes</h3>
+  <ul id="graph-nodes">
+    {% for node in nodes %}
+    <li id="node-{{ node.id }}" class="{% if node.waiting %}node-waiting{% else %}node-{{ node.status }}{% endif %}">
+      <a href="/tasks/{{ node.id }}">#{{ node.id }} {{ node.title }}</a>
+      <span class="status">{{ node.status }} · p{{ node.priority }} · {{ node.workflow }}</span>
+      {% if node.waiting %}<span class="badge-waiting">&#8983; waiting</span>{% endif %}
+    </li>
+    {% else %}
+    <li class="empty">no tasks</li>
+    {% endfor %}
+  </ul>
+
+  <h3>Edges</h3>
+  <ul id="graph-edges">
+    {% for edge in edges %}
+    <li id="edge-{{ edge.from_id }}-{{ edge.to_id }}-{{ edge.kind }}">
+      #{{ edge.from_id }} &mdash;{{ edge.kind }}&rarr; #{{ edge.to_id }}
+    </li>
+    {% else %}
+    <li class="empty">no relations</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <h2>No project yet</h2>
+  <p class="empty">Create a project through the MCP tools to see its graph.</p>
+  {% endif %}
+</section>
+{% endblock %}

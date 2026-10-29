@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}#{{ task.id }} · task-manager{% endblock %}
+{% block topbar %}<a href="/board">&larr; board</a>{% endblock %}
+{% block content %}
+<article class="detail">
+  <h2>#{{ task.id }} — {{ task.title }}</h2>
+  <p class="card-meta">
+    <span class="chip">p{{ task.priority }}</span>
+    <span class="chip">{{ task.type }}</span>
+    <span class="chip">{{ task.workflow }}</span>
+    <span class="chip">status {{ task.status }}</span>
+    {% if task.owner %}<span class="chip">owner {{ task.owner }}</span>{% endif %}
+    {% if waiting %}<span class="badge-waiting">&#8983; waiting on a dependency</span>{% endif %}
+  </p>
+
+  <div class="actions">
+    {% for action in actions %}
+    <button hx-post="/transitions"
+            hx-vals='{"task_id": {{ task.id }}, "action": "{{ action }}"}'
+            hx-target="#board"
+            hx-swap="innerHTML"
+            hx-on::after-request="if(event.detail.successful){window.location.href='/tasks/{{ task.id }}'}">
+      {{ action }}
+    </button>
+    {% endfor %}
+  </div>
+
+  <dl>
+    <dt>Description</dt><dd>{{ task.description or "—" }}</dd>
+    <dt>Design</dt><dd>{{ task.design or "—" }}</dd>
+    <dt>Outcome</dt><dd>{{ task.outcome or "—" }}</dd>
+    <dt>Block reason</dt><dd>{{ task.block_reason or "—" }}</dd>
+    <dt>Seq</dt><dd>{{ task.seq }}</dd>
+    <dt>Parent</dt>
+    <dd>{% if task.parent_id %}<a href="/tasks/{{ task.parent_id }}">#{{ task.parent_id }}</a>{% else %}—{% endif %}</dd>
+    <dt>Created</dt><dd>{{ task.created_at }}</dd>
+    <dt>Updated</dt><dd>{{ task.updated_at }}</dd>
+  </dl>
+
+  <h3>Relations</h3>
+  {% if relations %}
+  <ul>
+    {% for relation in relations %}
+    <li>
+      #{{ relation.related_id }} <span class="status">{{ relation.kind }}</span>
+      — {{ relation.target_status }}
+      {% if relation.satisfied %}(satisfied){% else %}(blocking){% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">no relations</p>
+  {% endif %}
+
+  {% if children %}
+  <h3>Children</h3>
+  <ul>
+    {% for child in children %}
+    <li><a href="/tasks/{{ child.id }}">#{{ child.id }} {{ child.title }}</a> <span class="status">{{ child.status }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if story_context %}
+  <h3>Story context</h3>
+  <ul>
+    {% for entry in story_context %}
+    <li>({{ entry.created_at }}) {{ entry.body }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <h3>Journal (newest first)</h3>
+  {% set entries = journal %}
+  <ul class="timeline" id="journal-timeline">
+    {% include "_journal_items.html" %}
+  </ul>
+
+  <h3>Add journal entry</h3>
+  <form hx-post="/tasks/{{ task.id }}/journal" hx-target="#journal-timeline" hx-swap="afterbegin">
+    <select name="kind">
+      <option value="note">note</option>
+      <option value="decision">decision</option>
+      <option value="attempt">attempt</option>
+      <option value="problem">problem</option>
+      <option value="result">result</option>
+    </select>
+    <textarea name="body" rows="3" placeholder="what you did, what failed, why" required></textarea>
+    <button class="primary" type="submit">Append</button>
+  </form>
+</article>
+{% endblock %}

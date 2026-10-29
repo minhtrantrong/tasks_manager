@@ -91,6 +91,8 @@ def _summary_rows(
                 seq=row["seq"],
                 owner=row["owner"],
                 updated_at=row["updated_at"],
+                parent_id=row["parent_id"],
+                lease_expires_at=row["lease_expires_at"],
             )
             for row in rows
         ]

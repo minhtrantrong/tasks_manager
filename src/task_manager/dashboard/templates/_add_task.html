@@ -1,0 +1,34 @@
+<details class="add-task" {% if error %}open{% endif %}>
+  <summary>+ add task</summary>
+  {% if error %}<p class="toast" id="form-error">{{ error }}</p>{% endif %}
+  <form hx-post="/tasks" hx-target="#cards-open" hx-swap="beforeend">
+    <input type="hidden" name="project_id" value="{{ project_id or '' }}">
+    <input type="text" name="title" placeholder="title" required maxlength="200"
+           value="{{ form.title if form else '' }}">
+    <textarea name="description" placeholder="description" rows="2">{{ form.description if form else '' }}</textarea>
+    <select name="type">
+      {% set chosen_type = (form.type if form else 'task') %}
+      <option value="task" {% if chosen_type == 'task' %}selected{% endif %}>task</option>
+      <option value="bug" {% if chosen_type == 'bug' %}selected{% endif %}>bug</option>
+      <option value="feature" {% if chosen_type == 'feature' %}selected{% endif %}>feature</option>
+      <option value="story" {% if chosen_type == 'story' %}selected{% endif %}>story</option>
+      <option value="chore" {% if chosen_type == 'chore' %}selected{% endif %}>chore</option>
+    </select>
+    <select name="workflow">
+      {% set chosen_workflow = (form.workflow if form else 'simple') %}
+      <option value="simple" {% if chosen_workflow == 'simple' %}selected{% endif %}>simple</option>
+      <option value="bugfix" {% if chosen_workflow == 'bugfix' %}selected{% endif %}>bugfix</option>
+      <option value="feature" {% if chosen_workflow == 'feature' %}selected{% endif %}>feature</option>
+      <option value="spike" {% if chosen_workflow == 'spike' %}selected{% endif %}>spike</option>
+    </select>
+    <select name="priority">
+      {% set chosen_priority = (form.priority|string if form else '3') %}
+      <option value="1" {% if chosen_priority == '1' %}selected{% endif %}>p1</option>
+      <option value="2" {% if chosen_priority == '2' %}selected{% endif %}>p2</option>
+      <option value="3" {% if chosen_priority == '3' %}selected{% endif %}>p3</option>
+      <option value="4" {% if chosen_priority == '4' %}selected{% endif %}>p4</option>
+      <option value="5" {% if chosen_priority == '5' %}selected{% endif %}>p5</option>
+    </select>
+    <button class="primary" type="submit">Add</button>
+  </form>
+</details>

@@ -6,7 +6,7 @@
 | Depends on | T21 |
 | Unblocks | — |
 | Size | M |
-| Status | pending |
+| Status | done |
 
 ## Goal
 
@@ -74,3 +74,12 @@ Mechanical N7 enforcement, run in CI forever:
 
 - Acceptance D passes; N7/N8 are enforced by failing tests, not conventions;
   `v0.1.0` is tagged with a green full CI matrix.
+
+## Footer — release
+
+| Item | Value |
+|---|---|
+| Version | 0.1.0 (`task_manager.__version__`) |
+| Tag | `v0.1.0` — cut on main once the full CI matrix (ubuntu/macos/windows) and the packaging job are green |
+| Acceptance | A `cold_resume`, B `no_double_work`, C `bounded_memory`, D `one_write_path` |
+| Write-path lint | `tests/test_write_path_lint.py` — its own CI job, blocks merge |

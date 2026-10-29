@@ -8,16 +8,20 @@ the same transaction as the write.
 from __future__ import annotations
 
 import json
+import logging
+import math
+import re
 import sqlite3
 from collections.abc import Iterable
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import scheduler, transitions
+from . import scheduler, transitions, workflows
 from .db import Database
 from .errors import (
     CycleDetected,
+    FtsUnavailable,
     LeaseConflict,
     MissingOutcome,
     MissingReason,
@@ -25,6 +29,7 @@ from .errors import (
     ValidationError,
 )
 from .models import (
+    Checkpoint,
     ContextEntry,
     Graph,
     GraphEdge,
@@ -33,12 +38,16 @@ from .models import (
     Page,
     Project,
     ProjectSummary,
+    RecallHit,
     Relation,
     RelationView,
+    SessionEvent,
     Task,
     TaskDetail,
     TaskSummary,
 )
+
+logger = logging.getLogger(__name__)
 
 TASK_TYPES = ("task", "bug", "feature", "story", "chore")
 TASK_STATUSES = ("open", "in_progress", "blocked", "done", "closed", "cancelled")
@@ -131,6 +140,8 @@ def _summary_from_row(row: sqlite3.Row) -> TaskSummary:
         seq=row["seq"],
         owner=row["owner"],
         updated_at=row["updated_at"],
+        parent_id=row["parent_id"],
+        lease_expires_at=row["lease_expires_at"],
     )
 
 
@@ -551,7 +562,7 @@ def task_get(
             **_task_from_row(task).model_dump(),
             relations=relation_views,
             children=[_summary_from_row(row) for row in children],
-            story_context=[],
+            story_context=_story_context_conn(conn, task_id, context_limit),
             journal=[_journal_from_row(row) for row in journal],
         )
         return detail
@@ -673,10 +684,16 @@ def _lease_expired(task: sqlite3.Row, now: str) -> bool:
 
 
 def _resolve_lease_minutes(
-    db: Database, task: sqlite3.Row, lease_minutes: int | None
+    conn: sqlite3.Connection,
+    db: Database,
+    task: sqlite3.Row,
+    lease_minutes: int | None,
 ) -> int:
     if lease_minutes is None:
-        return 60
+        project = conn.execute(
+            "SELECT root_path FROM projects WHERE id=?", (task["project_id"],)
+        ).fetchone()
+        return workflows.default_lease_minutes(project, task["workflow"])
     if (
         isinstance(lease_minutes, bool)
         or not isinstance(lease_minutes, int)
@@ -722,6 +739,22 @@ def _claim(
     )
 
 
+def _run_hook(phase: str, db: Database, project: sqlite3.Row, task: Task) -> None:
+    """Run an optional git hook after a transition committed; never raise."""
+    from . import hooks
+
+    try:
+        resolved = _project_from_row(project)
+        if not hooks.hooks_for(resolved).enabled:
+            return
+        if phase == "start":
+            hooks.on_task_start(db, resolved, task)
+        else:
+            hooks.on_task_complete(db, resolved, task)
+    except Exception:  # pragma: no cover - hooks may never fail a transition
+        logger.warning("work-on hook (%s) for task %s failed", phase, task.id)
+
+
 def task_start(
     db: Database, task_id: int, *, actor: str, lease_minutes: int | None = None
 ) -> Task:
@@ -748,10 +781,13 @@ def task_start(
                 )
                 task = _require_task(conn, task_id)
             transitions.assert_transition(task["status"], "start")
-            minutes = _resolve_lease_minutes(db, task, lease_minutes)
+            minutes = _resolve_lease_minutes(conn, db, task, lease_minutes)
             _claim(conn, db, task, actor=actor, lease_minutes=minutes, now=now)
             row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-            return _task_from_row(row)
+            project = _require_project(conn, task["project_id"])
+            result = _task_from_row(row)
+        _run_hook("start", db, project, result)
+        return result
     finally:
         conn.close()
 
@@ -803,7 +839,10 @@ def task_complete(db: Database, task_id: int, *, actor: str, outcome: str) -> Ta
                 (outcome, now, now, task_id),
             )
             row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
-            return _task_from_row(row)
+            project = _require_project(conn, task["project_id"])
+            result = _task_from_row(row)
+        _run_hook("complete", db, project, result)
+        return result
     finally:
         conn.close()
 
@@ -880,7 +919,7 @@ def task_unblock(
             )
             if to == "in_progress":
                 transitions.assert_transition("open", "start")
-                minutes = _resolve_lease_minutes(db, task, lease_minutes)
+                minutes = _resolve_lease_minutes(conn, db, task, lease_minutes)
                 _claim(conn, db, task, actor=actor, lease_minutes=minutes, now=now)
             row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
             return _task_from_row(row)
@@ -915,7 +954,7 @@ def task_reopen(
                 (now, task_id),
             )
             task = _require_task(conn, task_id)
-            minutes = _resolve_lease_minutes(db, task, lease_minutes)
+            minutes = _resolve_lease_minutes(conn, db, task, lease_minutes)
             _claim(conn, db, task, actor=actor, lease_minutes=minutes, now=now)
             row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
             return _task_from_row(row)
@@ -1032,7 +1071,11 @@ def journal_list(
     offset: int = 0,
     before: int | None = None,
 ) -> list[JournalEntry]:
-    """List journal entries newest-first, optionally scoped and cursor-paginated."""
+    """List journal entries newest-first, optionally scoped and cursor-paginated.
+
+    With ``task_id`` the listing is that task's log; with only ``project_id`` it
+    is the whole project log (task entries and project-level notes alike).
+    """
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
     conn = db.connect()
@@ -1045,8 +1088,6 @@ def journal_list(
         if resolved_task_id is not None:
             clauses.append("task_id=?")
             params.append(resolved_task_id)
-        else:
-            clauses.append("task_id IS NULL")
         if before is not None:
             clauses.append("id < ?")
             params.append(before)
@@ -1057,6 +1098,595 @@ def journal_list(
             params,
         ).fetchall()
         return [_journal_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Story context
+# ---------------------------------------------------------------------------
+
+MAX_CONTEXT_BODY = 400
+MAX_CONTEXT_ENTRIES = 20
+MAX_CONTEXT_RESPONSE = 2000
+MAX_CONTEXT_LIMIT = 50
+
+
+def _validate_context_body(body: str) -> str:
+    if not isinstance(body, str) or not body.strip():
+        raise ValidationError("context body must be a non-empty string")
+    cleaned = body.strip()
+    if len(cleaned) > MAX_CONTEXT_BODY:
+        raise ValidationError(
+            f"context body must be at most {MAX_CONTEXT_BODY} characters"
+        )
+    return cleaned
+
+
+def _story_ancestor(
+    conn: sqlite3.Connection, task_id: int
+) -> sqlite3.Row | None:
+    """Return the task if it is a story, else its nearest story ancestor."""
+    row = conn.execute(
+        "SELECT id, type, parent_id FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    if row is None:
+        raise NotFound(f"task {task_id} not found")
+    seen: set[int] = set()
+    cursor = row
+    while cursor is not None:
+        if cursor["type"] == "story":
+            return cursor
+        if cursor["id"] in seen:
+            return None
+        seen.add(cursor["id"])
+        if cursor["parent_id"] is None:
+            return None
+        cursor = conn.execute(
+            "SELECT id, type, parent_id FROM tasks WHERE id=?", (cursor["parent_id"],)
+        ).fetchone()
+    return None
+
+
+def _story_context_conn(
+    conn: sqlite3.Connection, task_id: int, limit: int = 10
+) -> list[ContextEntry]:
+    limit = max(0, min(int(limit), MAX_CONTEXT_LIMIT))
+    story = _story_ancestor(conn, task_id)
+    if story is None or limit == 0:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM task_context WHERE task_id=? ORDER BY id DESC LIMIT ?",
+        (story["id"], limit),
+    ).fetchall()
+    entries = [_context_from_row(row) for row in reversed(rows)]
+    bounded: list[ContextEntry] = []
+    total = 0
+    for entry in entries:
+        projected = total + len(entry.body) + (1 if bounded else 0)
+        if projected > MAX_CONTEXT_RESPONSE:
+            break
+        bounded.append(entry)
+        total = projected
+    return bounded
+
+
+def story_context(db: Database, task_id: int, *, limit: int = 10) -> list[ContextEntry]:
+    """Context of the nearest story ancestor (or the task itself), oldest-first."""
+    conn = db.connect()
+    try:
+        return _story_context_conn(conn, task_id, limit)
+    finally:
+        conn.close()
+
+
+def context_append(
+    db: Database, task_id: int, *, body: str, actor: str | None = None
+) -> ContextEntry:
+    """Append a curated fact to a story's context, evicting the oldest past 20."""
+    body = _validate_context_body(body)
+    if actor is not None and not isinstance(actor, str):
+        raise ValidationError("actor must be a string or null")
+
+    conn = db.connect()
+    try:
+        with _immediate(conn):
+            task = _require_task(conn, task_id)
+            if task["type"] != "story":
+                raise ValidationError("context entries attach to story tasks")
+            stored = conn.execute(
+                "SELECT count(*) FROM task_context WHERE task_id=?", (task_id,)
+            ).fetchone()[0]
+            excess = stored - MAX_CONTEXT_ENTRIES + 1
+            if excess > 0:
+                conn.execute(
+                    "DELETE FROM task_context WHERE id IN ("
+                    "SELECT id FROM task_context WHERE task_id=? ORDER BY id ASC LIMIT ?)",
+                    (task_id, excess),
+                )
+            cursor = conn.execute(
+                "INSERT INTO task_context(task_id, body, actor, created_at) VALUES (?, ?, ?, ?)",
+                (task_id, body, actor, db.utc_now()),
+            )
+            row = conn.execute(
+                "SELECT * FROM task_context WHERE id=?", (cursor.lastrowid,)
+            ).fetchone()
+            return _context_from_row(row)
+    finally:
+        conn.close()
+
+
+def context_entries(db: Database, task_id: int) -> list[ContextEntry]:
+    """Every stored context entry for ``task_id``, oldest-first (read-only)."""
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM task_context WHERE task_id=? ORDER BY id ASC", (task_id,)
+        ).fetchall()
+        return [_context_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Recall ("did we already try this?")
+# ---------------------------------------------------------------------------
+
+MAX_RECALL_LIMIT = 20
+
+
+def search_backend(db: Database) -> str:
+    """The backend ``recall`` would use right now: ``fts`` or ``like``."""
+    return "fts" if db.fts_enabled() else "like"
+
+
+def _search_tokens(query: str) -> list[str]:
+    """Split a user query into literals that are safe to quote for FTS5.
+
+    Anything that is not a word character is dropped, so no FTS5 operator
+    syntax can ever reach ``MATCH``; the tokens are ANDed, which keeps
+    "backoff retry" a useful multi-term query rather than an exact phrase.
+    """
+    return re.findall(r"\w+", query, re.UNICODE)
+
+
+def _match_expression(tokens: list[str]) -> str:
+    return " AND ".join('"' + token.replace('"', '""') + '"' for token in tokens)
+
+
+def _like_snippet(text: str, tokens: list[str], width: int = 80) -> str:
+    """A short window around the earliest match, with ellipses."""
+    lowered = text.lower()
+    index = -1
+    for token in tokens:
+        found = lowered.find(token)
+        if found != -1 and (index == -1 or found < index):
+            index = found
+    if index == -1:
+        index = 0
+    start = max(0, index - width // 3)
+    end = min(len(text), start + width)
+    snippet = " ".join(text[start:end].split())
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(text):
+        snippet = snippet + "…"
+    return snippet
+
+
+def _recall_journal_fts(
+    conn: sqlite3.Connection, expression: str, project_id: int | None, limit: int
+) -> list[RecallHit]:
+    clauses = ["journal_fts MATCH ?"]
+    params: list[Any] = [expression]
+    if project_id is not None:
+        clauses.append("j.project_id=?")
+        params.append(project_id)
+    else:
+        clauses.append("p.archived_at IS NULL")
+    params.append(limit)
+    rows = conn.execute(
+        "SELECT j.id, j.task_id, j.project_id, j.created_at, t.title, t.status, "
+        "snippet(journal_fts, 0, '…', '…', '…', 12) AS snippet "
+        "FROM journal_fts "
+        "JOIN journal j ON j.id = journal_fts.rowid "
+        "JOIN projects p ON p.id = j.project_id "
+        "LEFT JOIN tasks t ON t.id = j.task_id "
+        f"WHERE {' AND '.join(clauses)} "
+        "ORDER BY journal_fts.rowid DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [
+        RecallHit(
+            source="journal",
+            task_id=row["task_id"],
+            project_id=row["project_id"],
+            title=row["title"],
+            snippet=row["snippet"],
+            created_at=row["created_at"],
+            status=row["status"],
+        )
+        for row in rows
+    ]
+
+
+def _recall_journal_like(
+    conn: sqlite3.Connection,
+    tokens: list[str],
+    project_id: int | None,
+    limit: int,
+) -> list[RecallHit]:
+    clauses = ["LOWER(j.body) LIKE ?" for _ in tokens]
+    params: list[Any] = [f"%{token.lower()}%" for token in tokens]
+    if project_id is not None:
+        clauses.append("j.project_id=?")
+        params.append(project_id)
+    else:
+        clauses.append("p.archived_at IS NULL")
+    params.append(limit)
+    rows = conn.execute(
+        "SELECT j.id, j.task_id, j.project_id, j.created_at, j.body, t.title, t.status "
+        "FROM journal j "
+        "JOIN projects p ON p.id = j.project_id "
+        "LEFT JOIN tasks t ON t.id = j.task_id "
+        f"WHERE {' AND '.join(clauses)} "
+        "ORDER BY j.id DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [
+        RecallHit(
+            source="journal",
+            task_id=row["task_id"],
+            project_id=row["project_id"],
+            title=row["title"],
+            snippet=_like_snippet(row["body"], tokens),
+            created_at=row["created_at"],
+            status=row["status"],
+        )
+        for row in rows
+    ]
+
+
+def _recall_tasks_fts(
+    conn: sqlite3.Connection, expression: str, project_id: int | None, limit: int
+) -> list[RecallHit]:
+    clauses = ["task_fts MATCH ?"]
+    params: list[Any] = [expression]
+    if project_id is not None:
+        clauses.append("t.project_id=?")
+        params.append(project_id)
+    else:
+        clauses.append("p.archived_at IS NULL")
+    params.append(limit)
+    rows = conn.execute(
+        "SELECT t.id, t.project_id, t.title, t.status, t.created_at, "
+        "snippet(task_fts, -1, '…', '…', '…', 12) AS snippet "
+        "FROM task_fts "
+        "JOIN tasks t ON t.id = task_fts.rowid "
+        "JOIN projects p ON p.id = t.project_id "
+        f"WHERE {' AND '.join(clauses)} "
+        "ORDER BY task_fts.rowid DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [
+        RecallHit(
+            source="task",
+            task_id=row["id"],
+            project_id=row["project_id"],
+            title=row["title"],
+            snippet=row["snippet"],
+            created_at=row["created_at"],
+            status=row["status"],
+        )
+        for row in rows
+    ]
+
+
+def _recall_tasks_like(
+    conn: sqlite3.Connection,
+    tokens: list[str],
+    project_id: int | None,
+    limit: int,
+) -> list[RecallHit]:
+    clauses = [
+        "(LOWER(t.title) LIKE ? OR LOWER(COALESCE(t.description, '')) LIKE ?)"
+        for _ in tokens
+    ]
+    params: list[Any] = []
+    for token in tokens:
+        needle = f"%{token.lower()}%"
+        params.extend([needle, needle])
+    if project_id is not None:
+        clauses.append("t.project_id=?")
+        params.append(project_id)
+    else:
+        clauses.append("p.archived_at IS NULL")
+    params.append(limit)
+    rows = conn.execute(
+        "SELECT t.id, t.project_id, t.title, t.status, t.created_at, t.description "
+        "FROM tasks t JOIN projects p ON p.id = t.project_id "
+        f"WHERE {' AND '.join(clauses)} "
+        "ORDER BY t.id DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [
+        RecallHit(
+            source="task",
+            task_id=row["id"],
+            project_id=row["project_id"],
+            title=row["title"],
+            snippet=_like_snippet(
+                " ".join(part for part in (row["title"], row["description"]) if part),
+                tokens,
+            ),
+            created_at=row["created_at"],
+            status=row["status"],
+        )
+        for row in rows
+    ]
+
+
+def recall(
+    db: Database,
+    query: str,
+    *,
+    project_id: int | None = None,
+    limit: int = 10,
+    require_fts: bool = False,
+) -> list[RecallHit]:
+    """Search tasks and journal entries; journal hits come first, newest first."""
+    if not isinstance(query, str) or not query.strip():
+        raise ValidationError("recall requires a non-empty query")
+    limit = max(1, min(int(limit), MAX_RECALL_LIMIT))
+    tokens = _search_tokens(query)
+
+    conn = db.connect()
+    try:
+        if project_id is not None:
+            _require_project(conn, project_id)
+        fts = db.fts_enabled(conn)
+        if not fts and require_fts:
+            raise FtsUnavailable("FTS5 is required but not available")
+        if not tokens:
+            return []
+        expression = _match_expression(tokens)
+        if fts:
+            hits = _recall_journal_fts(conn, expression, project_id, limit)
+            remaining = limit - len(hits)
+            if remaining > 0:
+                hits.extend(_recall_tasks_fts(conn, expression, project_id, remaining))
+            return hits
+        hits = _recall_journal_like(conn, tokens, project_id, limit)
+        remaining = limit - len(hits)
+        if remaining > 0:
+            hits.extend(_recall_tasks_like(conn, tokens, project_id, remaining))
+        return hits
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Sessions & checkpoints
+# ---------------------------------------------------------------------------
+
+SESSION_EVENT_KINDS = ("session_start", "compaction", "prompt", "task_switch")
+MAX_SUMMARY_LINES = 60
+MAX_SUMMARY = 4000
+MAX_NEXT_ACTION = 200
+MAX_NEXT_ACTIONS = 10
+MAX_SESSION_DETAIL = 2000
+MAX_CHECKPOINTS = 20
+
+
+def _session_event_from_row(row: sqlite3.Row) -> SessionEvent:
+    return SessionEvent(
+        id=row["id"],
+        project_id=row["project_id"],
+        task_id=row["task_id"],
+        kind=row["kind"],
+        detail=row["detail"],
+        created_at=row["created_at"],
+    )
+
+
+def _parse_next_actions(text: str | None) -> list[str]:
+    if not text:
+        return []
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _checkpoint_from_row(row: sqlite3.Row) -> Checkpoint:
+    return Checkpoint(
+        id=row["id"],
+        project_id=row["project_id"],
+        task_id=row["task_id"],
+        summary=row["summary"],
+        next_actions=_parse_next_actions(row["next_actions"]),
+        created_at=row["created_at"],
+    )
+
+
+def _validate_task_scope(
+    conn: sqlite3.Connection, project_id: int, task_id: int
+) -> sqlite3.Row:
+    task = _require_task(conn, task_id)
+    if task["project_id"] != project_id:
+        raise ValidationError(f"task {task_id} does not belong to project {project_id}")
+    return task
+
+
+def session_event(
+    db: Database,
+    project_id: int,
+    kind: str,
+    *,
+    task_id: int | None = None,
+    detail: str | None = None,
+) -> SessionEvent:
+    """Record one append-only session event against a project (and task)."""
+    _validate_choice(kind, "kind", SESSION_EVENT_KINDS)
+    if detail is not None:
+        if not isinstance(detail, str):
+            raise ValidationError("detail must be a string or null")
+        if len(detail) > MAX_SESSION_DETAIL:
+            raise ValidationError(
+                f"detail must be at most {MAX_SESSION_DETAIL} characters"
+            )
+
+    conn = db.connect()
+    try:
+        with _immediate(conn):
+            _require_project(conn, project_id)
+            if task_id is not None:
+                _validate_task_scope(conn, project_id, task_id)
+            cursor = conn.execute(
+                "INSERT INTO session_events(project_id, task_id, kind, detail, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (project_id, task_id, kind, detail, db.utc_now()),
+            )
+            row = conn.execute(
+                "SELECT * FROM session_events WHERE id=?", (cursor.lastrowid,)
+            ).fetchone()
+            return _session_event_from_row(row)
+    finally:
+        conn.close()
+
+
+def _validate_summary(summary: str) -> str:
+    if not isinstance(summary, str) or not summary.strip():
+        raise ValidationError("checkpoint summary must be a non-empty string")
+    if len(summary.splitlines()) > MAX_SUMMARY_LINES:
+        raise ValidationError(
+            f"checkpoint summary must be at most {MAX_SUMMARY_LINES} lines"
+        )
+    if len(summary) > MAX_SUMMARY:
+        raise ValidationError(
+            f"checkpoint summary must be at most {MAX_SUMMARY} characters"
+        )
+    return summary.strip()
+
+
+def _normalise_next_actions(next_actions: Iterable[str] | None) -> list[str]:
+    if next_actions is None:
+        return []
+    if isinstance(next_actions, str) or not isinstance(next_actions, Iterable):
+        raise ValidationError("next_actions must be a list of strings")
+    actions: list[str] = []
+    for item in next_actions:
+        if not isinstance(item, str) or not item.strip():
+            raise ValidationError("next_actions must contain non-empty strings")
+        if len(item) > MAX_NEXT_ACTION:
+            raise ValidationError(
+                f"next_actions items must be at most {MAX_NEXT_ACTION} characters"
+            )
+        actions.append(item.strip())
+    if len(actions) > MAX_NEXT_ACTIONS:
+        raise ValidationError(
+            f"next_actions must contain at most {MAX_NEXT_ACTIONS} items"
+        )
+    return actions
+
+
+def checkpoint_save(
+    db: Database,
+    project_id: int,
+    summary: str,
+    *,
+    task_id: int | None = None,
+    next_actions: Iterable[str] | None = None,
+) -> Checkpoint:
+    """Store a handoff checkpoint; identical retries return the existing row."""
+    summary = _validate_summary(summary)
+    actions = _normalise_next_actions(next_actions)
+    payload = json.dumps(actions, ensure_ascii=False) if actions else None
+
+    conn = db.connect()
+    try:
+        with _immediate(conn):
+            _require_project(conn, project_id)
+            if task_id is not None:
+                _validate_task_scope(conn, project_id, task_id)
+            if task_id is None:
+                latest = conn.execute(
+                    "SELECT * FROM checkpoints WHERE project_id=? AND task_id IS NULL "
+                    "ORDER BY id DESC LIMIT 1",
+                    (project_id,),
+                ).fetchone()
+            else:
+                latest = conn.execute(
+                    "SELECT * FROM checkpoints WHERE project_id=? AND task_id=? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (project_id, task_id),
+                ).fetchone()
+            if (
+                latest is not None
+                and latest["summary"] == summary
+                and _parse_next_actions(latest["next_actions"]) == actions
+            ):
+                return _checkpoint_from_row(latest)
+            cursor = conn.execute(
+                "INSERT INTO checkpoints(project_id, task_id, summary, next_actions, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (project_id, task_id, summary, payload, db.utc_now()),
+            )
+            row = conn.execute(
+                "SELECT * FROM checkpoints WHERE id=?", (cursor.lastrowid,)
+            ).fetchone()
+            return _checkpoint_from_row(row)
+    finally:
+        conn.close()
+
+
+def checkpoint_latest(
+    db: Database, project_id: int, *, task_id: int | None = None, n: int = 5
+) -> list[Checkpoint]:
+    """Newest checkpoints for a project (task_id IS NULL) or for one task."""
+    n = max(1, min(int(n), MAX_CHECKPOINTS))
+    conn = db.connect()
+    try:
+        _require_project(conn, project_id)
+        if task_id is None:
+            rows = conn.execute(
+                "SELECT * FROM checkpoints WHERE project_id=? AND task_id IS NULL "
+                "ORDER BY id DESC LIMIT ?",
+                (project_id, n),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM checkpoints WHERE project_id=? AND task_id=? "
+                "ORDER BY id DESC LIMIT ?",
+                (project_id, task_id, n),
+            ).fetchall()
+        return [_checkpoint_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def session_event_count_since(
+    db: Database, project_id: int, kind: str, since: str | None
+) -> int:
+    """Count session events of ``kind`` created strictly after ``since``."""
+    conn = db.connect()
+    try:
+        _require_project(conn, project_id)
+        if since is None:
+            row = conn.execute(
+                "SELECT count(*) FROM session_events WHERE project_id=? AND kind=?",
+                (project_id, kind),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT count(*) FROM session_events "
+                "WHERE project_id=? AND kind=? AND created_at > ?",
+                (project_id, kind, since),
+            ).fetchone()
+        return int(row[0])
     finally:
         conn.close()
 
@@ -1220,5 +1850,222 @@ def task_delete(db: Database, task_id: int, *, hard: bool = False) -> Task:
                     (db.utc_now(), task_id),
                 )
             return result
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Read-side helpers for resume / export / dashboard (no writes)
+# ---------------------------------------------------------------------------
+
+
+def get_project(db: Database, project_id: int) -> Project:
+    """Fetch one project by id."""
+    conn = db.connect()
+    try:
+        return _project_from_row(_require_project(conn, project_id))
+    finally:
+        conn.close()
+
+
+def resolve_project_id(db: Database, ref: str | int) -> int:
+    """Resolve a project slug or numeric id to an id."""
+    if isinstance(ref, bool) or not isinstance(ref, (int, str)):
+        raise ValidationError("project must be a slug or a project id")
+    conn = db.connect()
+    try:
+        if isinstance(ref, int):
+            _require_project(conn, ref)
+            return ref
+        slug = ref.strip()
+        if not slug:
+            raise ValidationError("project must be a slug or a project id")
+        row = conn.execute("SELECT id FROM projects WHERE slug=?", (slug,)).fetchone()
+        if row is None:
+            raise NotFound(f"project '{slug}' not found")
+        return int(row["id"])
+    finally:
+        conn.close()
+
+
+def task_counts(db: Database, project_id: int) -> dict[str, int]:
+    """Task counts by status for one project (all statuses, zero-filled)."""
+    counts = dict.fromkeys(TASK_STATUSES, 0)
+    conn = db.connect()
+    try:
+        _require_project(conn, project_id)
+        rows = conn.execute(
+            "SELECT status, count(*) AS total FROM tasks WHERE project_id=? GROUP BY status",
+            (project_id,),
+        ).fetchall()
+        for row in rows:
+            counts[row["status"]] = int(row["total"])
+        return counts
+    finally:
+        conn.close()
+
+
+def all_tasks(db: Database, project_id: int) -> list[Task]:
+    """Every task of a project ordered ``priority, seq, id``."""
+    conn = db.connect()
+    try:
+        _require_project(conn, project_id)
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE project_id=? ORDER BY priority, seq, id",
+            (project_id,),
+        ).fetchall()
+        return [_task_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def tasks_with_status(db: Database, project_id: int, status: str) -> list[Task]:
+    """Tasks of one status ordered ``priority, seq, id``."""
+    _validate_choice(status, "status", TASK_STATUSES)
+    conn = db.connect()
+    try:
+        _require_project(conn, project_id)
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE project_id=? AND status=? "
+            "ORDER BY priority, seq, id",
+            (project_id, status),
+        ).fetchall()
+        return [_task_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def last_journal_by_task(
+    db: Database, task_ids: Iterable[int]
+) -> dict[int, JournalEntry]:
+    """Map each task id to its newest journal entry (one batched query)."""
+    ids = [int(task_id) for task_id in task_ids]
+    if not ids:
+        return {}
+    placeholders = ", ".join("?" for _ in ids)
+    conn = db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT j.* FROM journal j JOIN ("
+            f"SELECT task_id, MAX(id) AS id FROM journal WHERE task_id IN ({placeholders}) "
+            "GROUP BY task_id) latest ON latest.id = j.id",
+            ids,
+        ).fetchall()
+        return {row["task_id"]: _journal_from_row(row) for row in rows}
+    finally:
+        conn.close()
+
+
+def journal_recent(db: Database, project_id: int, limit: int = 8) -> list[JournalEntry]:
+    """The newest journal entries of a project, task-scoped ones included."""
+    limit = max(1, min(int(limit), 100))
+    conn = db.connect()
+    try:
+        _require_project(conn, project_id)
+        rows = conn.execute(
+            "SELECT * FROM journal WHERE project_id=? ORDER BY id DESC LIMIT ?",
+            (project_id, limit),
+        ).fetchall()
+        return [_journal_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def journal_for_project(db: Database, project_id: int) -> list[JournalEntry]:
+    """Every journal entry of a project, oldest-first (export)."""
+    conn = db.connect()
+    try:
+        _require_project(conn, project_id)
+        rows = conn.execute(
+            "SELECT * FROM journal WHERE project_id=? ORDER BY id ASC", (project_id,)
+        ).fetchall()
+        return [_journal_from_row(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def project_relations(db: Database, project_id: int) -> list[Relation]:
+    """Every relation whose source task belongs to the project, ordered."""
+    conn = db.connect()
+    try:
+        _require_project(conn, project_id)
+        rows = conn.execute(
+            "SELECT r.task_id, r.related_id, r.kind FROM task_relations r "
+            "JOIN tasks t ON t.id = r.task_id WHERE t.project_id=? "
+            "ORDER BY r.task_id, r.kind, r.related_id",
+            (project_id,),
+        ).fetchall()
+        return [
+            Relation(task_id=row["task_id"], related_id=row["related_id"], kind=row["kind"])
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+def parse_timestamp(value: str | None) -> datetime | None:
+    """Parse the UTC ISO-8601 timestamps this project writes."""
+    if not value:
+        return None
+    for pattern in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.strptime(value, pattern).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def task_title(db: Database, task_id: int) -> str | None:
+    """The title of one task, or ``None`` when it no longer exists."""
+    conn = db.connect()
+    try:
+        row = conn.execute("SELECT title FROM tasks WHERE id=?", (task_id,)).fetchone()
+        return row["title"] if row is not None else None
+    finally:
+        conn.close()
+
+
+def lease_left_minutes(expires_at: str | None, now: str | None = None) -> int | None:
+    """Whole minutes left on a lease, floored at zero (``None`` when unleased)."""
+    expires = parse_timestamp(expires_at)
+    if expires is None:
+        return None
+    current = parse_timestamp(now) if now else datetime.now(timezone.utc)
+    if current is None:
+        current = datetime.now(timezone.utc)
+    return max(0, math.ceil((expires - current).total_seconds() / 60))
+
+
+def stories_with_context(
+    db: Database,
+    project_id: int,
+    *,
+    max_stories: int = 3,
+    max_entries: int = 3,
+) -> list[dict[str, Any]]:
+    """Stories that hold context and have children, with their newest entries."""
+    conn = db.connect()
+    try:
+        _require_project(conn, project_id)
+        rows = conn.execute(
+            "SELECT t.id FROM tasks t WHERE t.project_id=? AND t.type='story' "
+            "AND EXISTS (SELECT 1 FROM task_context c WHERE c.task_id=t.id) "
+            "AND EXISTS (SELECT 1 FROM tasks child WHERE child.parent_id=t.id) "
+            "ORDER BY t.priority, t.seq, t.id LIMIT ?",
+            (project_id, max_stories),
+        ).fetchall()
+        stories: list[dict[str, Any]] = []
+        for row in rows:
+            entries = conn.execute(
+                "SELECT body FROM task_context WHERE task_id=? ORDER BY id DESC LIMIT ?",
+                (row["id"], max_entries),
+            ).fetchall()
+            stories.append(
+                {
+                    "story_id": row["id"],
+                    "entries": [item["body"] for item in reversed(entries)],
+                }
+            )
+        return stories
     finally:
         conn.close()

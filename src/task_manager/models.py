@@ -72,6 +72,8 @@ class TaskSummary(Model):
     seq: float
     owner: str | None = None
     updated_at: str
+    parent_id: int | None = None
+    lease_expires_at: str | None = None
 
 
 class Relation(Model):
@@ -167,3 +169,4 @@ class RecallHit(Model):
     title: str | None = None
     snippet: str
     created_at: str
+    status: str | None = None

@@ -12,8 +12,13 @@ logger = logging.getLogger(__name__)
 
 
 def utc_now() -> str:
-    """Return the current UTC time as an ISO-8601 ``...Z`` string."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """Return the current UTC time as an ISO-8601 ``...Z`` string.
+
+    Microseconds are kept so that events recorded in the same second still
+    order correctly (``resume`` counts compactions after the latest
+    checkpoint by comparing timestamps).
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def _split_statements(sql: str) -> list[str]:

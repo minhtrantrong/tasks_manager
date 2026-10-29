@@ -87,3 +87,38 @@ def load_config(cwd: Path | None = None) -> Config:
     )
 
     return Config(db_path=db_path, root_path=root_path, slug=slug, hooks=hooks)
+
+
+_CONFIG_CACHE: dict[tuple, Config] = {}
+
+
+def _cache_key(directory: Path) -> tuple:
+    """Cache key that changes when ``.tasks/config.json`` changes on disk."""
+    config_path = directory / ".tasks" / "config.json"
+    try:
+        stat = config_path.stat()
+    except OSError:
+        return (str(directory), None, None)
+    return (str(directory), stat.st_mtime_ns, stat.st_size)
+
+
+def load_config_cached(cwd: Path | None = None) -> Config:
+    """``load_config`` memoised per directory + config-file signature."""
+    directory = (Path(cwd) if cwd is not None else Path.cwd()).resolve()
+    key = _cache_key(directory)
+    cached = _CONFIG_CACHE.get(key)
+    if cached is None:
+        cached = load_config(directory)
+        _CONFIG_CACHE[key] = cached
+    return cached
+
+
+def hooks_for(project: object) -> HookConfig:
+    """Resolve a project's hook settings from its ``root_path`` (never raises)."""
+    root_path = getattr(project, "root_path", None)
+    if not root_path:
+        return HookConfig()
+    try:
+        return load_config_cached(Path(root_path)).hooks
+    except ValidationError:
+        return HookConfig()

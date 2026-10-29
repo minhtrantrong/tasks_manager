@@ -1,0 +1,8 @@
+{% for entry in entries %}
+<li id="journal-{{ entry.id }}">
+  <div class="meta">{{ entry.kind }} &middot; {{ entry.created_at }}{% if entry.actor %} &middot; {{ entry.actor }}{% endif %}</div>
+  <pre>{{ entry.body }}</pre>
+</li>
+{% else %}
+<li class="empty">no journal entries yet</li>
+{% endfor %}

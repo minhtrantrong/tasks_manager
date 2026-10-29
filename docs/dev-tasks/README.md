@@ -26,23 +26,23 @@ Verification work packages for these tasks live in
 | [T03](T03-repository-projects-tasks.md) | Repository: config, projects, task CRUD | M0 | T02 | L | done |
 | [T04](T04-mcp-server-core.md) | MCP server: Project + Task tool families | M0 | T03 | M | done |
 | [T05](T05-relations-graph.md) | Relations: `task_link`/`task_unlink`/`task_graph` | M1 | T04 | M | done |
-| [T06](T06-scheduler-read-side.md) | Scheduler read side: ready/waiting, `task_next` | M1 | T05 | M | pending |
-| [T07](T07-lifecycle-transitions.md) | Lifecycle: state machine, leases, transitions | M2 | T04 | L | pending |
-| [T08](T08-lease-reaping-concurrency.md) | Lease reaping + concurrency (acceptance B) | M2 | T07 | M | pending |
-| [T09](T09-journal.md) | Journal: `journal_add`/`journal_list` | M3 | T04 | S | pending |
-| [T10](T10-context.md) | Story context: `context_append` + inheritance | M3 | T04 | S | pending |
-| [T11](T11-recall.md) | `recall`: FTS5 + LIKE fallback | M3 | T09 | S | pending |
-| [T12](T12-sessions-checkpoints.md) | `session_event`, `checkpoint_save`/`_latest` | M4 | T04 | S | pending |
-| [T13](T13-resume.md) | `resume` assembly + budget (acceptance C) | M4 | T08, T09, T12 | M | pending |
-| [T14](T14-workflows.md) | Workflow templates + `workflow_prompt` | M4 | T04 | S | pending |
-| [T15](T15-mcp-prompts-acceptance-A.md) | MCP prompts + cold-resume (acceptance A) | M4 | T13, T14 | M | pending |
-| [T16](T16-git-hooks.md) | Optional git `work-on` hooks | M5 | T07 | S | pending |
-| [T17](T17-export.md) | Markdown/EDNL export | M5 | T09 | S | pending |
-| [T18](T18-packaging-docs.md) | Packaging (`uvx`/`pipx`) + README | M5 | T15 | S | pending |
-| [T19](T19-dashboard-skeleton.md) | Dashboard skeleton: FastAPI app + vendored assets | M6 | T04 | M | pending |
-| [T20](T20-dashboard-board.md) | Board UI: columns, cards, swimlanes, waiting | M6 | T19, T06, T08 | L | pending |
-| [T21](T21-dashboard-mutations.md) | Board mutations, detail panel, graph, takeover | M6 | T20, T07 | L | pending |
-| [T22](T22-acceptance-D-final.md) | Acceptance D + write-path lint + release | M6 | T21 | M | pending |
+| [T06](T06-scheduler-read-side.md) | Scheduler read side: ready/waiting, `task_next` | M1 | T05 | M | done |
+| [T07](T07-lifecycle-transitions.md) | Lifecycle: state machine, leases, transitions | M2 | T04 | L | done |
+| [T08](T08-lease-reaping-concurrency.md) | Lease reaping + concurrency (acceptance B) | M2 | T07 | M | done |
+| [T09](T09-journal.md) | Journal: `journal_add`/`journal_list` | M3 | T04 | S | done |
+| [T10](T10-context.md) | Story context: `context_append` + inheritance | M3 | T04 | S | done |
+| [T11](T11-recall.md) | `recall`: FTS5 + LIKE fallback | M3 | T09 | S | done |
+| [T12](T12-sessions-checkpoints.md) | `session_event`, `checkpoint_save`/`_latest` | M4 | T04 | S | done |
+| [T13](T13-resume.md) | `resume` assembly + budget (acceptance C) | M4 | T08, T09, T12 | M | done |
+| [T14](T14-workflows.md) | Workflow templates + `workflow_prompt` | M4 | T04 | S | done |
+| [T15](T15-mcp-prompts-acceptance-A.md) | MCP prompts + cold-resume (acceptance A) | M4 | T13, T14 | M | done |
+| [T16](T16-git-hooks.md) | Optional git `work-on` hooks | M5 | T07 | S | done |
+| [T17](T17-export.md) | Markdown/EDNL export | M5 | T09 | S | done |
+| [T18](T18-packaging-docs.md) | Packaging (`uvx`/`pipx`) + README | M5 | T15 | S | done |
+| [T19](T19-dashboard-skeleton.md) | Dashboard skeleton: FastAPI app + vendored assets | M6 | T04 | M | done |
+| [T20](T20-dashboard-board.md) | Board UI: columns, cards, swimlanes, waiting | M6 | T19, T06, T08 | L | done |
+| [T21](T21-dashboard-mutations.md) | Board mutations, detail panel, graph, takeover | M6 | T20, T07 | L | done |
+| [T22](T22-acceptance-D-final.md) | Acceptance D + write-path lint + release | M6 | T21 | M | done |
 
 ## Execution order
 

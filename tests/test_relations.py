@@ -112,7 +112,7 @@ def test_task_graph_nodes_edges_and_waiting(db, project):
     assert [(edge.from_id, edge.to_id, edge.kind) for edge in graph.edges] == [
         (first.id, second.id, "blocked_by")
     ]
-    assert graph.waiting == []
+    assert graph.waiting == [first.id]
     assert graph.nodes[-1].status == "cancelled"
 
 

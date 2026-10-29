@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Board · task-manager{% endblock %}
+{% block topbar %}
+<form class="filters" method="get" action="/board">
+  <label for="swimlane">Lanes</label>
+  <select id="swimlane" name="swimlane" hx-get="/board" hx-target="#board" hx-swap="innerHTML" hx-include="closest form">
+    <option value="none" {% if swimlane == 'none' %}selected{% endif %}>none</option>
+    <option value="workflow" {% if swimlane == 'workflow' %}selected{% endif %}>workflow</option>
+    <option value="parent" {% if swimlane == 'parent' %}selected{% endif %}>parent</option>
+  </select>
+  <label>
+    <input type="checkbox" name="show_cancelled" value="1" {% if show_cancelled %}checked{% endif %}
+           hx-get="/board" hx-target="#board" hx-swap="innerHTML" hx-include="closest form">
+    show cancelled
+  </label>
+  <noscript><button type="submit">Apply</button></noscript>
+</form>
+{% endblock %}
+{% block content %}
+<div id="board"
+     hx-get="/board?swimlane={{ swimlane }}&amp;show_cancelled={{ 1 if show_cancelled else 0 }}"
+     hx-trigger="every 5s"
+     hx-swap="innerHTML">
+  {% include "_board_body.html" %}
+</div>
+{% endblock %}

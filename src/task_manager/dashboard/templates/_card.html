@@ -1,0 +1,22 @@
+<article class="card priority-{{ card.priority }}{% if card.waiting %} waiting{% endif %}{% if card.owner %} leased{% endif %}"
+         id="task-{{ card.id }}"
+         data-task-id="{{ card.id }}"
+         data-status="{{ card.status }}">
+  <p class="card-title">
+    <a href="/tasks/{{ card.id }}">#{{ card.id }} {{ card.title }}</a>
+  </p>
+  <div class="card-meta">
+    <span class="chip">p{{ card.priority }}</span>
+    <span class="chip">{{ card.workflow }}</span>
+    {% if card.owner %}<span class="chip">owner {{ card.owner }}</span>{% endif %}
+    {% if card.waiting %}
+    <span class="badge-waiting">&#8983; waits {% for needs in card.waits_on %}#{{ needs }}{% if not loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+    {% if card.owner and card.lease_left is not none %}
+    <span class="lease">lease {{ card.lease_left }}m left</span>
+    {% endif %}
+  </div>
+  {% if card.last_journal %}
+  <div class="card-journal">{{ card.last_journal.kind }} &middot; {{ card.last_journal.body }}</div>
+  {% endif %}
+</article>

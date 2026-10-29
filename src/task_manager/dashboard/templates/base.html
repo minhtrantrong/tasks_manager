@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}task-manager{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script>
+    // Refusals arrive as 422 with the server's reason; render them instead of
+    // silently swallowing the response.
+    document.addEventListener("htmx:beforeSwap", function (event) {
+      if (event.detail.xhr.status === 422) {
+        event.detail.shouldSwap = true;
+        event.detail.isError = false;
+      }
+    });
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <h1><a href="/board">task-manager</a></h1>
+    <nav>
+      <a href="/board">Board</a>
+      <a href="/graph">Graph</a>
+    </nav>
+    {% block topbar %}{% endblock %}
+  </header>
+  <main id="main">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

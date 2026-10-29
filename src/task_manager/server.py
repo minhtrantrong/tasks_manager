@@ -13,6 +13,7 @@ from . import repository
 from .config import load_config
 from .db import Database
 from .errors import TaskManagerError
+from .prompts import register_prompts
 
 logger = logging.getLogger(__name__)
 
@@ -327,9 +328,183 @@ def _register(server: FastMCP, db_provider) -> None:
         )
 
     # ------------------------------------------------------------------
-    # Journal (append-only)
+    # Story context
     # ------------------------------------------------------------------
 
+    @server.tool()
+    def context_append(
+        task_id: int, body: str, actor: str | None = None
+    ) -> dict[str, Any]:
+        """Append a short curated fact to a story's context (children inherit it).
+
+        Side effects: inserts one context row; a story keeps at most 20 entries,
+        so the oldest is evicted past the cap. Bodies are capped at 400 chars.
+        """
+        return _invoke(
+            repository.context_append,
+            db_provider(),
+            task_id,
+            body=body,
+            actor=actor,
+        )
+
+    # ------------------------------------------------------------------
+    # Recall
+    # ------------------------------------------------------------------
+
+    @server.tool()
+    def recall(
+        query: str,
+        project_id: int | None = None,
+        limit: int = 10,
+        require_fts: bool = False,
+    ) -> dict[str, Any]:
+        """Search tasks and journal entries: "did we already try this?". Read-only.
+
+        Returns ``{ok, data: {items, search_backend}}``; ``search_backend`` is
+        ``fts`` when FTS5 is available and ``like`` when recall degrades to
+        substring matching. ``require_fts=True`` raises ``FtsUnavailable``
+        instead of degrading.
+        """
+        database = db_provider()
+        return _invoke(
+            lambda: {
+                "items": repository.recall(
+                    database,
+                    query,
+                    project_id=project_id,
+                    limit=limit,
+                    require_fts=require_fts,
+                ),
+                "search_backend": repository.search_backend(database),
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    @server.tool()
+    def export(
+        project_id: int, fmt: str = "markdown", path: str | None = None
+    ) -> dict[str, Any]:
+        """Export a project as Markdown or EDNL for human review.
+
+        Export never writes to the database — it only reads. With ``path`` the
+        text is written to that file and ``data`` carries the path plus a
+        1000-character preview; without it, ``data.preview`` is the full text.
+        """
+        from .export import PREVIEW_CHARS, export_project
+
+        def _payload() -> dict[str, Any]:
+            result = export_project(
+                db_provider(), project_id, fmt=fmt, path=path
+            )
+            if isinstance(result, str):
+                return {"path": None, "preview": result}
+            text = result.read_text(encoding="utf-8")
+            return {"path": str(result), "preview": text[:PREVIEW_CHARS]}
+
+        return _invoke(_payload)
+
+    # ------------------------------------------------------------------
+    # Workflows
+    # ------------------------------------------------------------------
+
+    @server.tool()
+    def workflow_prompt(project_id: int, name: str) -> dict[str, Any]:
+        """Return a workflow's description, lease default, and prompt template.
+
+        ``source`` says whether the template came from the project override or
+        the built-ins. Idempotent and side-effect-free: nothing is written.
+        """
+        from . import workflows
+
+        return _invoke(workflows.load_workflow, db_provider(), project_id, name)
+
+    # ------------------------------------------------------------------
+    # Resume (the flagship briefing)
+    # ------------------------------------------------------------------
+
+    @server.tool()
+    def resume(project: str | int) -> dict[str, Any]:
+        """Return a ≤ ~1200-token briefing that lets a fresh agent continue.
+
+        ``project`` accepts a slug or a project id. The payload carries the
+        checkpoint, in-progress work with its last journal line, blocked and
+        waiting tasks, ready tasks, story context, recent entries, and health.
+        Read-only apart from reaping expired leases.
+        """
+        from .resume import build_resume
+
+        database = db_provider()
+        return _invoke(
+            lambda: build_resume(
+                database, repository.resolve_project_id(database, project)
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # Session & checkpoints
+    # ------------------------------------------------------------------
+
+    @server.tool()
+    def session_event(
+        project_id: int,
+        kind: str,
+        task_id: int | None = None,
+        detail: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a ``session_start``/``compaction``/``prompt``/``task_switch``.
+
+        Side effects: inserts one session_events row. Append-only.
+        """
+        return _invoke(
+            repository.session_event,
+            db_provider(),
+            project_id,
+            kind,
+            task_id=task_id,
+            detail=detail,
+        )
+
+    @server.tool()
+    def checkpoint_save(
+        project_id: int,
+        summary: str,
+        task_id: int | None = None,
+        next_actions: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Store a handoff checkpoint (idempotent for identical content).
+
+        Side effects: inserts one checkpoints row unless the latest checkpoint
+        for the same scope already holds the identical summary/next_actions.
+        """
+        return _invoke(
+            repository.checkpoint_save,
+            db_provider(),
+            project_id,
+            summary,
+            task_id=task_id,
+            next_actions=next_actions,
+        )
+
+    @server.tool()
+    def checkpoint_latest(
+        project_id: int, task_id: int | None = None, n: int = 5
+    ) -> dict[str, Any]:
+        """Return the newest checkpoints for a project or task (n capped at 20). Read-only."""
+        return _invoke(
+            repository.checkpoint_latest,
+            db_provider(),
+            project_id,
+            task_id=task_id,
+            n=n,
+        )
+
+    # ------------------------------------------------------------------
+    # Journal (append-only)
+    # ------------------------------------------------------------------
     @server.tool()
     def journal_add(
         kind: str,
@@ -401,9 +576,11 @@ def create_server(db_path: Path) -> FastMCP:
     """Create a server bound to ``db_path``."""
     server = FastMCP("task-manager")
     _register(server, lambda: Database(db_path))
+    register_prompts(server)
     return server
 
 
 # Module-level singleton (used by callers that rely on the default config).
 mcp = FastMCP("task-manager")
 _register(mcp, lambda: Database(load_config().db_path))
+register_prompts(mcp)

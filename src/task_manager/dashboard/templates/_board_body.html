@@ -1,0 +1,35 @@
+{# The polled fragment: columns in fixed status order, waiting rendered as a badge. #}
+<div class="board" id="board-body">
+  {% for column in columns %}
+  <section class="column" data-status="{{ column.status }}">
+    <h2 class="column-title">{{ column.status }} <span class="column-count">({{ column.count }})</span></h2>
+
+    <div class="lanes" id="cards-{{ column.status }}">
+      {% if column.lanes %}
+        {% for lane in column.lanes %}
+        <h3 class="swimlane-heading">{{ lane.name }}</h3>
+        <div class="cards">
+          {% for card in lane.cards %}
+            {% include "_card.html" %}
+          {% else %}
+          <p class="empty">nothing here</p>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="cards">
+          {% for card in column.cards %}
+            {% include "_card.html" %}
+          {% else %}
+          <p class="empty">nothing here</p>
+          {% endfor %}
+        </div>
+      {% endif %}
+    </div>
+
+    {% if column.status == 'open' and project_id %}
+      {% include "_add_task.html" %}
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
