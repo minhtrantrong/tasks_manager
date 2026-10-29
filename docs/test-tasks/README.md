@@ -13,12 +13,35 @@ Each `TTxx` verifies the implementation task `Txx` in [docs/tasks/](../tasks/REA
   `MCP`, `REL`, `SCH`, `TR`, `LEASE`, `JN`, `CTX`, `RCL`, `SES`, `RES`, `WF`, `PRM`,
   `HK`, `EXP`, `PKG`, `DSH`, `LINT`, `ACC`). Cite a case as `TT07/3`.
 - **Done** — a test task is `done` only when every case in its file passes on Windows,
-  macOS, and Linux, and the oracles it lists still hold.
+  macOS, and Linux, the oracles it lists still hold, **and** its evidence folder
+  `docs/test-reports/<Test-ID>/` is complete (report, log, screenshots, video).
 - **No production code** — a test task may not change `src/`. If a test needs a seam
   (clock, SQL capture, bind address), the change is requested from the owning `Txx`.
 - **Disagreements** — when code and plan contradict each other, the test task records
   the discrepancy against the open item in [test-plan.md](../test-plan.md) §16 and
   blocks rather than encoding a guess.
+
+## Execution and evidence
+
+Every test task states, in this order, the fields a tester needs to run it without
+asking questions:
+
+| Section | Must answer |
+|---|---|
+| `Test environment` | Terminal CLI command(s) and/or the dashboard base URL (`http://127.0.0.1:8765`), the install extra, env vars, and platform prerequisites |
+| `Test data` | The fixtures and seeds used, plus every literal the cases depend on (boundary strings, ids, timestamps, JSON payloads). "None" only when the case is genuinely data-free |
+| `How to test` | Numbered, copy-pasteable steps from a clean checkout to the verdict |
+| `Expected results` | One row per case (or case group) with the observable pass criterion and the failure it is designed to catch |
+| `Test artifacts` | The `<Test-ID>` folder contents: `test-report.md`, `pytest.log`, `screenshots/`, `video/`, and what each file must show |
+
+Evidence standard — folder layout, naming, capture commands per OS, the
+`test-report.md` template, and the per-run checklist — lives in
+[test-reports/README.md](../test-reports/README.md). Two rules are non-negotiable:
+
+1. **Screenshots are embedded.** Every file in `screenshots/` appears in
+   `test-report.md` with a caption naming the case it proves.
+2. **One video per test task.** `video/<Test-ID>-<slug>.mp4` records the same steps
+   as *How to test* and ends on the pass/fail verdict.
 
 ## Task list
 
