@@ -21,23 +21,93 @@ Everything lives in one SQLite file. No network calls, no daemon, no build step.
 Requires **Python ≥ 3.10**. FTS5 ships with modern CPython's SQLite, so there is
 nothing else to install.
 
+[pipx](https://pipx.pypa.io) is the supported way to install this server. It
+gives `task-manager` its own virtualenv plus a shim on `PATH`, so an MCP client
+can launch it from any directory without touching your global Python (and
+without depending on whichever venv happens to be active).
+
+### 1. Get pipx
+
 ```bash
-pipx install .            # isolated CLI install
-# or
-uvx --from . task-manager # run without installing
+python -m pip install --user pipx
+python -m pipx ensurepath     # then open a new shell
+pipx --version
 ```
 
-Optional, for the dashboard only:
+### 2. Install the package
+
+From a clone of this repo:
 
 ```bash
-pipx install ".[dashboard]"   # adds fastapi + jinja2 + uvicorn
+git clone https://github.com/minhtrantrong/tasks_manager.git
+cd tasks_manager
+pipx install .
 ```
 
-Verify the install:
+Straight from git, with no local clone — pin a ref for a reproducible install:
 
 ```bash
-task-manager --help
+pipx install git+https://github.com/minhtrantrong/tasks_manager.git
+pipx install "git+https://github.com/minhtrantrong/tasks_manager.git@v0.1.0"
+```
+
+Install with a specific interpreter if your default `python` is too old (pipx
+remembers it for upgrades and reinstalls):
+
+```bash
+pipx install --python 3.12 .
+```
+
+Both forms build the wheel locally with hatchling, which is also what packages
+the workflow templates, migrations and dashboard assets — nothing has to be
+copied by hand.
+
+There is no `pipx install task-manager` from PyPI yet: until the first release
+is published, install from this repository as shown above.
+
+### 3. Add the dashboard (optional)
+
+The `dashboard` extra pulls in fastapi + jinja2 + uvicorn:
+
+```bash
+pipx install ".[dashboard]"                      # local clone
+pipx install "task-manager[dashboard] @ git+https://github.com/minhtrantrong/tasks_manager.git@v0.1.0"
+```
+
+Already installed the core package? Add the extra to the existing venv:
+
+```bash
+pipx install --force ".[dashboard]"     # local clone
+pipx inject task-manager fastapi jinja2 uvicorn   # git/PyPI install
+```
+
+### 4. Verify
+
+```bash
+pipx list                       # task-manager 0.1.0 -> task-manager.exe
+task-manager --help             # serve, dashboard
 python -m task_manager --help
+```
+
+If `task-manager --help` disagrees with `pipx list`, a second install is
+shadowing the shim — usually a `pip install` into a global Python or an active
+virtualenv. Compare `where.exe task-manager` (Windows) or `which -a task-manager`
+and remove the other one; the pipx shim is the one under
+`pipx environment --value PIPX_BIN_DIR`.
+
+### 5. Upgrade or remove
+
+```bash
+pipx upgrade task-manager         # re-resolves the recorded spec (pinned refs stay pinned)
+pipx reinstall task-manager       # rebuild the venv, e.g. after moving the clone
+git pull && pipx install --force ".[dashboard]"   # local clone, after a pull
+pipx uninstall task-manager
+```
+
+To try it once without installing anything:
+
+```bash
+uvx --from . task-manager --help
 ```
 
 ## Quick start
@@ -89,9 +159,44 @@ VS Code / Claude Desktop style configuration:
 }
 ```
 
-On Windows, if `task-manager` is not on `PATH`, point `command` at the console
-script inside your environment, or use
-`{"command": "python", "args": ["-m", "task_manager", "serve"]}`.
+The client launches `task-manager` in whatever directory the workspace has, so
+pipx's shim is the easiest thing to point at. Some GUI clients (VS Code on
+Windows in particular) do not inherit a shell `PATH`; for those, use the absolute
+shim path from `pipx environment --value PIPX_BIN_DIR`, or the app inside the pipx
+venv:
+
+```json
+{
+  "mcpServers": {
+    "task-manager": {
+      "command": "C:\\Users\\me\\AppData\\Local\\pipx\\pipx\\venvs\\task-manager\\Scripts\\task-manager.exe",
+      "args": ["serve"],
+      "env": { "TASKS_DB": "C:\\Users\\me\\.tasks_manager\\tasks.sqlite" }
+    }
+  }
+}
+```
+
+(`pipx environment --value PIPX_HOME` prints the venv root; the app is at
+`<PIPX_HOME>\venvs\task-manager\Scripts\task-manager.exe` on Windows and
+`<PIPX_HOME>/venvs/task-manager/bin/task-manager` elsewhere.)
+
+Pin `TASKS_DB` when one client should use one database regardless of workspace —
+the server otherwise resolves the path per launch, as described in
+[Storage](#storage). If you would rather not install anything, point the client at
+a checkout instead (always pass `--spec`; a bare `pipx run task-manager` would
+fetch an unrelated PyPI package):
+
+```json
+{
+  "mcpServers": {
+    "task-manager": {
+      "command": "pipx",
+      "args": ["run", "--spec", "D:\\code\\tasks_manager", "task-manager", "serve"]
+    }
+  }
+}
+```
 
 ## Storage
 
@@ -223,6 +328,19 @@ pip install -e ".[dev,dashboard]"
 ruff check src tests
 pytest -q
 ```
+
+To exercise the CLI the way an installed user does, without leaving the working
+tree (the `-e` editable link means source edits take effect immediately):
+
+```bash
+pipx install --editable .
+task-manager --help
+```
+
+`pipx install --force ".[dashboard]"` is the same install without the editable
+link — useful to confirm the packaged wheel actually works (the wheel contents
+check in [docs/dev-tasks/T18-packaging-docs.md](docs/dev-tasks/T18-packaging-docs.md)
+covers what has to be inside it).
 
 The four acceptance gates:
 
